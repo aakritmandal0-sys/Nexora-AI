@@ -128,6 +128,7 @@ export default function App() {
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
   const [isLiveMode, setIsLiveMode] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   
   const [user, setUser] = useState<User | null>(null);
@@ -241,8 +242,23 @@ export default function App() {
 
   const activeChat = chats.find(c => c.id === activeChatId);
 
+  const handleSignIn = async () => {
+    try {
+      setAuthError(null);
+      await signInWithGoogle();
+    } catch (error: any) {
+      if (error.code === 'auth/popup-closed-by-user') {
+        // Silently handle popup closed by user
+        console.log('Sign-in popup closed by user');
+      } else {
+        setAuthError(error.message || 'Failed to sign in');
+        console.error('Sign-in error:', error);
+      }
+    }
+  };
+
   const createNewChat = async () => {
-    if (!user) return signInWithGoogle();
+    if (!user) return handleSignIn();
     
     const newChatRef = doc(collection(db, 'users', user.uid, 'chats'));
     const newChat = {
@@ -345,7 +361,7 @@ export default function App() {
 
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || isTyping || !user) {
-      if (!user) signInWithGoogle();
+      if (!user) handleSignIn();
       return;
     }
 
@@ -392,17 +408,18 @@ export default function App() {
       const urls = currentInput.match(urlRegex);
       if (urls && currentInput.toLowerCase().includes('summarize')) {
         setIsTyping(true);
-        const result = await ai.models.generateContent({
+        const model = ai.getGenerativeModel({
           model: settings.model,
-          contents: { parts: [{ text: `Summarize this website: ${urls[0]}` }] },
-          config: { tools: [{ googleSearch: {} }] }
+          tools: [{ googleSearch: {} }] as any,
         });
+        const result = await model.generateContent(`Summarize this website: ${urls[0]}`);
+        const responseText = result.response.text();
         
         const aiMsgRef = doc(collection(db, 'users', user.uid, 'chats', currentChatId, 'messages'));
         await setDoc(aiMsgRef, {
           id: aiMsgRef.id,
           role: 'ai',
-          content: `### 🔗 Web Summary\n\n${result.text}`,
+          content: `### 🔗 Web Summary\n\n${responseText}`,
           timestamp: Date.now(),
         });
         return;
@@ -442,55 +459,55 @@ export default function App() {
         ? "\n\n[COUNCIL MODE ACTIVE]: You are a council of experts (Developer, Designer, Project Manager). Provide a balanced perspective from each role."
         : "";
 
-      const geminiChat = ai.chats.create({
+      const model = ai.getGenerativeModel({
         model: settings.model,
-        config: {
-          systemInstruction: settings.systemInstruction + context + memoryContext + researchInstruction + councilInstruction,
+        systemInstruction: settings.systemInstruction + context + memoryContext + researchInstruction + councilInstruction,
+        generationConfig: {
           temperature: settings.temperature,
           topP: settings.topP,
           topK: settings.topK,
-          tools: [{ googleSearch: {} }],
-          toolConfig: { includeServerSideToolInvocations: true }
         },
-        history: history
+        tools: [{ googleSearch: {} }] as any,
       });
 
-      const result = await geminiChat.sendMessage({
-        message: [
-          ...(userMessage.attachments?.map(a => ({
-            inlineData: {
-              data: a.split(',')[1],
-              mimeType: a.split(';')[0].split(':')[1]
-            }
-          })) || []),
-          { text: userMessage.content }
-        ]
+      const geminiChat = model.startChat({
+        history: history as any,
       });
 
-      if (!result.text) throw new Error("EMPTY_RESPONSE");
+      const result = await geminiChat.sendMessage([
+        ...(userMessage.attachments?.map(a => ({
+          inlineData: {
+            data: a.split(',')[1],
+            mimeType: a.split(';')[0].split(':')[1]
+          }
+        })) || []),
+        { text: userMessage.content }
+      ]);
+
+      const responseText = result.response.text();
+      if (!responseText) throw new Error("EMPTY_RESPONSE");
 
       const aiMsgRef = doc(collection(db, 'users', user.uid, 'chats', currentChatId, 'messages'));
       await setDoc(aiMsgRef, {
         id: aiMsgRef.id,
         role: 'ai',
-        content: result.text,
+        content: responseText,
         timestamp: Date.now(),
       });
 
       // Auto-Voice Reply
       if (settings.autoVoice) {
-        speakText(result.text);
+        speakText(responseText);
       }
 
       // Memory Extraction: Detect if AI learned something new about the user
-      if (result.text.toLowerCase().includes("remember") || result.text.toLowerCase().includes("noted")) {
-        const memoryPrompt = `Extract any personal facts about the user from this conversation. Return as a JSON list of strings. Conversation: User: ${currentInput} AI: ${result.text}`;
-        const memoryResult = await ai.models.generateContent({
-          model: DEFAULT_MODEL,
-          contents: { parts: [{ text: memoryPrompt }] }
-        });
+      if (responseText.toLowerCase().includes("remember") || responseText.toLowerCase().includes("noted")) {
+        const memoryPrompt = `Extract any personal facts about the user from this conversation. Return as a JSON list of strings. Conversation: User: ${currentInput} AI: ${responseText}`;
+        const memoryModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
+        const memoryResult = await memoryModel.generateContent(memoryPrompt);
+        const memoryText = memoryResult.response.text();
         try {
-          const newFacts = JSON.parse(memoryResult.text.match(/\[.*\]/s)?.[0] || "[]");
+          const newFacts = JSON.parse(memoryText.match(/\[.*\]/s)?.[0] || "[]");
           for (const fact of newFacts) {
             await addDoc(collection(db, 'users', user.uid, 'memories'), {
               fact,
@@ -503,12 +520,11 @@ export default function App() {
       // Task Extraction: Detect if user wants to schedule something
       if (currentInput.toLowerCase().includes("schedule") || currentInput.toLowerCase().includes("remind me")) {
         const taskPrompt = `Extract a task or event from this message. Return as JSON: { title: string, dueDate: number (timestamp), type: 'task' | 'event' }. Message: ${currentInput}`;
-        const taskResult = await ai.models.generateContent({
-          model: DEFAULT_MODEL,
-          contents: { parts: [{ text: taskPrompt }] }
-        });
+        const taskModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
+        const taskResult = await taskModel.generateContent(taskPrompt);
+        const taskText = taskResult.response.text();
         try {
-          const taskData = JSON.parse(taskResult.text.match(/\{.*\}/s)?.[0] || "null");
+          const taskData = JSON.parse(taskText.match(/\{.*\}/s)?.[0] || "null");
           if (taskData) {
             await addDoc(collection(db, 'users', user.uid, 'tasks'), {
               ...taskData,
@@ -552,20 +568,23 @@ export default function App() {
       // Clean markdown for better speech
       const cleanText = text.replace(/[#*`_~]/g, '').trim();
       
-      const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash", // Using a highly stable model for TTS
-        contents: [{ parts: [{ text: cleanText }] }],
-        config: {
-          responseModalities: ["AUDIO"], // Using string instead of enum for better compatibility
+      const model = ai.getGenerativeModel({
+        model: "gemini-2.0-flash",
+      });
+      
+      const response = await model.generateContent({
+        contents: [{ role: 'user', parts: [{ text: cleanText }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: { voiceName: 'Kore' },
             },
           },
-        },
+        } as any,
       });
 
-      const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      const part = response.response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
       if (part?.inlineData?.data) {
         const { mimeType, data } = part.inlineData;
         const audioUrl = `data:${mimeType || 'audio/wav'};base64,${data}`;
@@ -814,13 +833,21 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <button 
-                onClick={signInWithGoogle}
-                className="flex items-center gap-2 w-full p-3 rounded-xl bg-white/10 hover:bg-white/20 transition-all text-sm font-medium"
-              >
-                <LogIn size={18} />
-                Sign In
-              </button>
+              <div className="space-y-2">
+                {authError && (
+                  <div className="p-2 bg-red-500/20 border border-red-500/30 text-red-400 text-[10px] rounded-lg flex items-center gap-2">
+                    <X size={10} className="cursor-pointer" onClick={() => setAuthError(null)} />
+                    {authError}
+                  </div>
+                )}
+                <button 
+                  onClick={handleSignIn}
+                  className="flex items-center gap-2 w-full p-3 rounded-xl bg-white/10 hover:bg-white/20 transition-all text-sm font-medium"
+                >
+                  <LogIn size={18} />
+                  Sign In
+                </button>
+              </div>
             )}
             <div className="flex items-center justify-between">
               <button 
