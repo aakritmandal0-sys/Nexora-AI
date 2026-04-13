@@ -359,6 +359,20 @@ export default function App() {
     recognition.start();
   };
 
+  const callAI = async (fn: () => Promise<any>, retries = 2, delay = 2000): Promise<any> => {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isQuotaError = error.message?.includes('429') || error.message?.toLowerCase().includes('quota');
+      if (isQuotaError && retries > 0) {
+        console.log(`Quota exceeded, retrying in ${delay}ms... (${retries} retries left)`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return callAI(fn, retries - 1, delay * 2);
+      }
+      throw error;
+    }
+  };
+
   const handleSend = async () => {
     if ((!input.trim() && attachments.length === 0) || isTyping || !user) {
       if (!user) handleSignIn();
@@ -474,7 +488,7 @@ export default function App() {
         history: history as any,
       });
 
-      const result = await geminiChat.sendMessage([
+      const result = await callAI(() => geminiChat.sendMessage([
         ...(userMessage.attachments?.map(a => ({
           inlineData: {
             data: a.split(',')[1],
@@ -482,7 +496,7 @@ export default function App() {
           }
         })) || []),
         { text: userMessage.content }
-      ]);
+      ]));
 
       const responseText = result.response.text();
       if (!responseText) throw new Error("EMPTY_RESPONSE");
@@ -504,9 +518,9 @@ export default function App() {
       if (responseText.toLowerCase().includes("remember") || responseText.toLowerCase().includes("noted")) {
         const memoryPrompt = `Extract any personal facts about the user from this conversation. Return as a JSON list of strings. Conversation: User: ${currentInput} AI: ${responseText}`;
         const memoryModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
-        const memoryResult = await memoryModel.generateContent(memoryPrompt);
-        const memoryText = memoryResult.response.text();
         try {
+          const memoryResult = await callAI(() => memoryModel.generateContent(memoryPrompt));
+          const memoryText = memoryResult.response.text();
           const newFacts = JSON.parse(memoryText.match(/\[.*\]/s)?.[0] || "[]");
           for (const fact of newFacts) {
             await addDoc(collection(db, 'users', user.uid, 'memories'), {
@@ -521,9 +535,9 @@ export default function App() {
       if (currentInput.toLowerCase().includes("schedule") || currentInput.toLowerCase().includes("remind me")) {
         const taskPrompt = `Extract a task or event from this message. Return as JSON: { title: string, dueDate: number (timestamp), type: 'task' | 'event' }. Message: ${currentInput}`;
         const taskModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
-        const taskResult = await taskModel.generateContent(taskPrompt);
-        const taskText = taskResult.response.text();
         try {
+          const taskResult = await callAI(() => taskModel.generateContent(taskPrompt));
+          const taskText = taskResult.response.text();
           const taskData = JSON.parse(taskText.match(/\{.*\}/s)?.[0] || "null");
           if (taskData) {
             await addDoc(collection(db, 'users', user.uid, 'tasks'), {
@@ -535,12 +549,18 @@ export default function App() {
       }
 
     } catch (error: any) {
-      // ... existing error handling ...
+      console.error("AI Error:", error);
+      
+      let errorMessage = error.message;
+      if (error.message?.includes('429') || error.message?.toLowerCase().includes('quota')) {
+        errorMessage = "⚠️ Nexora's brain is a bit tired (Quota Exceeded). Please wait a few seconds and try again, or check your API key limits.";
+      }
+
       const aiMsgRef = doc(collection(db, 'users', user.uid, 'chats', currentChatId, 'messages'));
       await setDoc(aiMsgRef, {
         id: aiMsgRef.id,
         role: 'ai',
-        content: `❌ Error: ${error.message}`,
+        content: errorMessage,
         timestamp: Date.now(),
       });
     } finally {
@@ -572,7 +592,7 @@ export default function App() {
         model: "gemini-2.0-flash",
       });
       
-      const response = await model.generateContent({
+      const response = await callAI(() => model.generateContent({
         contents: [{ role: 'user', parts: [{ text: cleanText }] }],
         generationConfig: {
           responseModalities: ["AUDIO"],
@@ -582,7 +602,7 @@ export default function App() {
             },
           },
         } as any,
-      });
+      }));
 
       const part = response.response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
       if (part?.inlineData?.data) {
