@@ -1,0 +1,110 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A conversation thread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "title"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "An individual message within a chat",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chatId": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "ai"] },
+        "content": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "attachments": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "chatId", "role", "content", "timestamp"]
+    },
+    "Memory": {
+      "title": "Memory",
+      "description": "Long-term facts about the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fact": { "type": "string" },
+        "category": { "type": "string" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["id", "fact", "timestamp"]
+    },
+    "File": {
+      "title": "File",
+      "description": "Metadata for uploaded files in the knowledge base",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "url": { "type": "string" },
+        "size": { "type": "number" },
+        "uploadedAt": { "type": "number" }
+      },
+      "required": ["id", "name", "url"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A user task or calendar event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "dueDate": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "completed"] },
+        "type": { "type": "string", "enum": ["task", "event"] }
+      },
+      "required": ["id", "title", "dueDate"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/users/{userId}/memories/{memoryId}": {
+      "schema": "Memory",
+      "description": "User's long-term memories"
+    },
+    "/users/{userId}/files/{fileId}": {
+      "schema": "File",
+      "description": "User's knowledge base files"
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "User's tasks and events"
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "User's chat conversations"
+    },
+    "/users/{userId}/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a specific chat"
+    }
+  }
+}

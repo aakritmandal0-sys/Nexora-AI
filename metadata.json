@@ -1,0 +1,5 @@
+{
+  "name": "Nexora AI",
+  "description": "A professional, high-performance AI chatbot powered by Gemini, featuring multi-turn conversations, image analysis, and voice interaction.",
+  "requestFramePermissions": ["microphone"]
+}
