@@ -1,0 +1,16 @@
+[build]
+  # The directory where the build output is generated
+  publish = "dist"
+
+  # The command to build the project
+  command = "npm run build"
+
+[build.environment]
+  # Ensures the Node version matches modern standards
+  NODE_VERSION = "20"
+
+[[redirects]]
+  # Redirect all routes to index.html for SPA support
+  from = "/*"
+  to = "/index.html"
+  status = 200

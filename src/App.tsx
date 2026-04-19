@@ -25,10 +25,23 @@ import {
   Search,
   Share2,
   FileText,
-  Sparkles
+  Sparkles,
+  Calendar, 
+  Database, 
+  FileCode, 
+  FolderOpen, 
+  Layout, 
+  ListTodo, 
+  Users, 
+  Zap,
+  Globe,
+  Brain,
+  Microscope,
+  Box
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { ai, DEFAULT_MODEL, PRO_MODEL } from '@/src/lib/gemini';
+import { Modality } from "@google/genai";
 import { Chat, Message, AppSettings } from '@/src/types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -51,24 +64,10 @@ import {
 } from 'firebase/firestore';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
-import { GoogleGenAI, Modality } from "@google/genai";
 import { CodeSandbox } from '@/src/components/CodeSandbox';
 import { ChartWidget } from '@/src/components/ChartWidget';
 import { ThreeDViewer } from '@/src/components/ThreeDViewer';
-import { 
-  Calendar, 
-  Database, 
-  FileCode, 
-  FolderOpen, 
-  Layout, 
-  ListTodo, 
-  Users, 
-  Zap,
-  Globe,
-  Brain,
-  Microscope,
-  Box
-} from 'lucide-react';
+import { NexoraLive } from '@/src/components/NexoraLive';
 
 const PERSONAS = {
   default: {
@@ -422,12 +421,12 @@ export default function App() {
       const urls = currentInput.match(urlRegex);
       if (urls && currentInput.toLowerCase().includes('summarize')) {
         setIsTyping(true);
-        const model = ai.getGenerativeModel({
+        const result = await callAI(() => ai.models.generateContent({
           model: settings.model,
-          tools: [{ googleSearch: {} }] as any,
-        });
-        const result = await model.generateContent(`Summarize this website: ${urls[0]}`);
-        const responseText = result.response.text();
+          contents: `Summarize this website: ${urls[0]}`,
+          config: { tools: [{ googleSearch: {} }] }
+        }));
+        const responseText = result.text;
         
         const aiMsgRef = doc(collection(db, 'users', user.uid, 'chats', currentChatId, 'messages'));
         await setDoc(aiMsgRef, {
@@ -473,32 +472,32 @@ export default function App() {
         ? "\n\n[COUNCIL MODE ACTIVE]: You are a council of experts (Developer, Designer, Project Manager). Provide a balanced perspective from each role."
         : "";
 
-      const model = ai.getGenerativeModel({
+      const geminiChat = ai.chats.create({
         model: settings.model,
-        systemInstruction: settings.systemInstruction + context + memoryContext + researchInstruction + councilInstruction,
-        generationConfig: {
+        config: {
+          systemInstruction: settings.systemInstruction + context + memoryContext + researchInstruction + councilInstruction,
           temperature: settings.temperature,
           topP: settings.topP,
           topK: settings.topK,
+          tools: [{ googleSearch: {} }],
+          toolConfig: { includeServerSideToolInvocations: true }
         },
-        tools: [{ googleSearch: {} }] as any,
+        history: history as any
       });
 
-      const geminiChat = model.startChat({
-        history: history as any,
-      });
+      const result = await callAI(() => geminiChat.sendMessage({
+        message: [
+          ...(userMessage.attachments?.map(a => ({
+            inlineData: {
+              data: a.split(',')[1],
+              mimeType: a.split(';')[0].split(':')[1]
+            }
+          })) || []),
+          { text: userMessage.content }
+        ]
+      }));
 
-      const result = await callAI(() => geminiChat.sendMessage([
-        ...(userMessage.attachments?.map(a => ({
-          inlineData: {
-            data: a.split(',')[1],
-            mimeType: a.split(';')[0].split(':')[1]
-          }
-        })) || []),
-        { text: userMessage.content }
-      ]));
-
-      const responseText = result.response.text();
+      const responseText = result.text;
       if (!responseText) throw new Error("EMPTY_RESPONSE");
 
       const aiMsgRef = doc(collection(db, 'users', user.uid, 'chats', currentChatId, 'messages'));
@@ -517,10 +516,12 @@ export default function App() {
       // Memory Extraction: Detect if AI learned something new about the user
       if (responseText.toLowerCase().includes("remember") || responseText.toLowerCase().includes("noted")) {
         const memoryPrompt = `Extract any personal facts about the user from this conversation. Return as a JSON list of strings. Conversation: User: ${currentInput} AI: ${responseText}`;
-        const memoryModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
         try {
-          const memoryResult = await callAI(() => memoryModel.generateContent(memoryPrompt));
-          const memoryText = memoryResult.response.text();
+          const memoryResult = await callAI(() => ai.models.generateContent({
+            model: DEFAULT_MODEL,
+            contents: memoryPrompt
+          }));
+          const memoryText = memoryResult.text;
           const newFacts = JSON.parse(memoryText.match(/\[.*\]/s)?.[0] || "[]");
           for (const fact of newFacts) {
             await addDoc(collection(db, 'users', user.uid, 'memories'), {
@@ -534,10 +535,12 @@ export default function App() {
       // Task Extraction: Detect if user wants to schedule something
       if (currentInput.toLowerCase().includes("schedule") || currentInput.toLowerCase().includes("remind me")) {
         const taskPrompt = `Extract a task or event from this message. Return as JSON: { title: string, dueDate: number (timestamp), type: 'task' | 'event' }. Message: ${currentInput}`;
-        const taskModel = ai.getGenerativeModel({ model: DEFAULT_MODEL });
         try {
-          const taskResult = await callAI(() => taskModel.generateContent(taskPrompt));
-          const taskText = taskResult.response.text();
+          const taskResult = await callAI(() => ai.models.generateContent({
+            model: DEFAULT_MODEL,
+            contents: taskPrompt
+          }));
+          const taskText = taskResult.text;
           const taskData = JSON.parse(taskText.match(/\{.*\}/s)?.[0] || "null");
           if (taskData) {
             await addDoc(collection(db, 'users', user.uid, 'tasks'), {
@@ -588,33 +591,28 @@ export default function App() {
       // Clean markdown for better speech
       const cleanText = text.replace(/[#*`_~]/g, '').trim();
       
-      const model = ai.getGenerativeModel({
-        model: "gemini-2.0-flash",
-      });
-      
-      const response = await callAI(() => model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: cleanText }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
+      const response = await callAI(() => ai.models.generateContent({
+        model: "gemini-3.1-flash-tts-preview",
+        contents: [{ parts: [{ text: `Say cheerfully: ${cleanText}` }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: {
               prebuiltVoiceConfig: { voiceName: 'Kore' },
             },
           },
-        } as any,
+        },
       }));
 
-      const part = response.response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-      if (part?.inlineData?.data) {
-        const { mimeType, data } = part.inlineData;
-        const audioUrl = `data:${mimeType || 'audio/wav'};base64,${data}`;
+      const base64Audio = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+      if (base64Audio) {
+        const audioUrl = `data:audio/wav;base64,${base64Audio}`;
         
         const audio = new Audio();
         
         audio.oncanplaythrough = () => {
           audio.play().catch(err => {
             console.warn("Autoplay blocked or playback failed:", err);
-            // Fallback to browser TTS if audio play fails
             browserSpeak(cleanText);
           });
         };
@@ -626,7 +624,6 @@ export default function App() {
 
         audio.src = audioUrl;
       } else {
-        // Fallback if no audio data returned
         browserSpeak(cleanText);
       }
     } catch (e) {
@@ -1470,37 +1467,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Nexora Live UI */}
-      <AnimatePresence>
-        {isLiveMode && (
-          <motion.div
-            initial={{ opacity: 0, y: 100 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 100 }}
-            className="fixed bottom-24 right-8 z-50 w-80 rounded-2xl bg-indigo-600 shadow-2xl p-6 text-white flex flex-col items-center gap-4 border border-white/20"
-          >
-            <div className="w-20 h-20 rounded-full bg-white/10 flex items-center justify-center relative">
-              <motion.div 
-                animate={{ scale: [1, 1.5, 1], opacity: [0.5, 0.2, 0.5] }}
-                transition={{ repeat: Infinity, duration: 2 }}
-                className="absolute inset-0 rounded-full bg-white/20"
-              />
-              <Zap size={32} className="animate-pulse" />
-            </div>
-            <div className="text-center">
-              <h3 className="font-bold text-lg">Nexora Live</h3>
-              <p className="text-xs opacity-70">Listening for your voice...</p>
-            </div>
-            <div className="flex gap-4">
-              <button onClick={() => setIsLiveMode(false)} className="p-3 rounded-full bg-white/10 hover:bg-white/20 transition-all">
-                <MicOff size={20} />
-              </button>
-              <button onClick={() => setIsLiveMode(false)} className="p-3 rounded-full bg-red-500 hover:bg-red-400 transition-all">
-                <X size={20} />
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <NexoraLive isOpen={isLiveMode} onClose={() => setIsLiveMode(false)} />
     </div>
   );
 }

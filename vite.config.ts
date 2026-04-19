@@ -19,12 +19,12 @@ export default defineConfig(({mode}) => {
       chunkSizeWarningLimit: 1000,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'vendor-react': ['react', 'react-dom'],
-            'vendor-firebase': ['firebase/app', 'firebase/auth', 'firebase/firestore'],
-            'vendor-ai': ['@google/genai'],
-            'vendor-viz': ['recharts', 'd3'],
-            'vendor-three': ['three', '@react-three/fiber', '@react-three/drei'],
+          manualChunks(id) {
+            if (id.includes('react')) return 'vendor-react';
+            if (id.includes('firebase')) return 'vendor-firebase';
+            if (id.includes('@google/genai')) return 'vendor-ai';
+            if (id.includes('recharts') || id.includes('d3')) return 'vendor-viz';
+            if (id.includes('three') || id.includes('@react-three')) return 'vendor-three';
           },
         },
       },

@@ -1,0 +1,6 @@
+/*
+  Netlify Redirects for Single Page Applications.
+  This ensures that any URL that isn't a static asset (like /files) 
+  will be handled by index.html, allowing React Router to work correctly.
+*/
+/*    /index.html   200
